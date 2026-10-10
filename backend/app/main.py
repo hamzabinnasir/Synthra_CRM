@@ -12,6 +12,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from . import migrator
 from .api import auth as auth_routes
+from .api import database as database_routes
 from .auth.repo_pg import PgAuthRepository
 from .auth.service import AuthService
 from .config import get_settings
@@ -19,16 +20,19 @@ from .db import create_pool
 from .errors import install_error_handlers
 from .logging_setup import setup_logging
 from .mailer import Mailer
+from .security.crypto import SecretBox
+from .tenantdb.service import TenantDatabaseService
 from .web import RequestContextMiddleware
 
 CONTROL_MIGRATIONS = Path(__file__).parent / "migrations" / "control"
 log = logging.getLogger("app")
 
 
-async def _housekeeping(repo: PgAuthRepository) -> None:
+async def _housekeeping(repo: PgAuthRepository, tenant_db: TenantDatabaseService) -> None:
     while True:
-        await asyncio.sleep(3600)
+        await asyncio.sleep(300)
         try:
+            await tenant_db.reap_idle()
             await repo.purge_expired(datetime.now(timezone.utc))
         except Exception:
             log.exception("housekeeping_failed")
@@ -48,21 +52,25 @@ async def lifespan(app: FastAPI):
             raise RuntimeError(
                 f"{len(pending)} control-plane migration(s) pending. Set CRM_AUTO_MIGRATE=true or run the migrator.")
     repo = PgAuthRepository(pool)
+    box = SecretBox.from_b64(settings.master_key, settings.master_key_previous)
+    tenant_db = TenantDatabaseService(pool, box, settings)
     app.state.settings = settings
     app.state.pool = pool
+    app.state.secret_box = box
     app.state.auth_service = AuthService(repo, settings, Mailer(settings))
-    task = asyncio.create_task(_housekeeping(repo))
+    app.state.tenant_db = tenant_db
+    task = asyncio.create_task(_housekeeping(repo, tenant_db))
     try:
         yield
     finally:
         task.cancel()
+        await tenant_db.close_all()
         await pool.close()
 
 
 def create_app() -> FastAPI:
-    # Settings are read once here for middleware; lifespan reuses the cached instance.
     settings = get_settings()
-    app = FastAPI(title="Synthra CRM", version="0.1.0", lifespan=lifespan,
+    app = FastAPI(title="Synthra CRM", version="0.2.0", lifespan=lifespan,
                   docs_url=None if settings.is_production else "/docs",
                   redoc_url=None, openapi_url=None if settings.is_production else "/openapi.json")
     app.add_middleware(
@@ -73,6 +81,7 @@ def create_app() -> FastAPI:
     app.add_middleware(RequestContextMiddleware, settings=settings)
     install_error_handlers(app)
     app.include_router(auth_routes.router)
+    app.include_router(database_routes.router)
 
     @app.get("/healthz", include_in_schema=False)
     async def healthz():

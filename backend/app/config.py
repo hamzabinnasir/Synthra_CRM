@@ -26,6 +26,9 @@ class Settings(BaseSettings):
     env: str = Field("development", alias="CRM_ENV")
     database_url: str = Field(..., alias="CRM_DATABASE_URL")
     auto_migrate: bool = Field(False, alias="CRM_AUTO_MIGRATE")
+    # Allow tenants to connect to databases on private/loopback addresses. Keep false when hosting for
+    # other people (it would let them probe your internal network); true is fine for self-hosting alone.
+    allow_private_db_hosts: bool = Field(False, alias="CRM_ALLOW_PRIVATE_DB_HOSTS")
 
     # Secrets. Generate with:  python -c "import os,base64;print(base64.b64encode(os.urandom(32)).decode())"
     master_key: str = Field(..., alias="CRM_MASTER_KEY")
