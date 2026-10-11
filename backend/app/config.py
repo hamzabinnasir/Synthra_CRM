@@ -39,6 +39,18 @@ class Settings(BaseSettings):
     public_url: str = Field("http://localhost:3000", alias="CRM_PUBLIC_URL")
     allowed_origins: List[str] = Field(default_factory=list, alias="CRM_ALLOWED_ORIGINS")
     trusted_proxy_hops: int = Field(0, alias="CRM_TRUSTED_PROXY_HOPS", ge=0, le=5)
+    # Public base URL of THIS API as Meta reaches it; webhook URLs shown in the dashboard are built from it.
+    api_public_url: str = Field("http://localhost:8000", alias="CRM_API_PUBLIC_URL")
+
+    # Meta Graph API
+    graph_version: str = Field("v21.0", alias="CRM_GRAPH_VERSION", pattern=r"^v\d+\.\d+$")
+    instagram_graph_version: str = Field("v25.0", alias="CRM_INSTAGRAM_GRAPH_VERSION", pattern=r"^v\d+\.\d+$")
+
+    # Webhook intake and background worker
+    webhook_max_body_bytes: int = Field(1_000_000, alias="CRM_WEBHOOK_MAX_BODY_BYTES", ge=10_000)
+    webhook_rate_per_minute: int = Field(1200, alias="CRM_WEBHOOK_RATE_PER_MINUTE", ge=10)
+    run_worker: bool = Field(True, alias="CRM_RUN_WORKER")   # set false on API-only replicas
+    worker_concurrency: int = Field(8, alias="CRM_WORKER_CONCURRENCY", ge=1, le=64)
 
     # Auth policy
     access_ttl_minutes: int = Field(10, alias="CRM_ACCESS_TTL_MINUTES", ge=1, le=60)

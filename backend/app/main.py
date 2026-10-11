@@ -13,6 +13,11 @@ from fastapi.middleware.cors import CORSMiddleware
 from . import migrator
 from .api import auth as auth_routes
 from .api import database as database_routes
+from .api import channels as channel_routes
+from .api import webhooks as webhook_routes
+from .channels.service import ChannelService
+from .jobs.queue import EventQueue
+from .jobs.worker import Worker
 from .auth.repo_pg import PgAuthRepository
 from .auth.service import AuthService
 from .config import get_settings
@@ -59,11 +64,22 @@ async def lifespan(app: FastAPI):
     app.state.secret_box = box
     app.state.auth_service = AuthService(repo, settings, Mailer(settings))
     app.state.tenant_db = tenant_db
+    app.state.channels = ChannelService(pool, box, settings)
+    app.state.queue = EventQueue(pool)
+    # Channel handlers are registered here by the bot engine. A channel with no handler is never
+    # claimed, so its events wait safely in the queue.
+    app.state.handlers = {}
+    worker = Worker(app.state.queue, app.state.handlers, concurrency=settings.worker_concurrency)
+    stop_worker = asyncio.Event()
+    worker_task = asyncio.create_task(worker.run(stop_worker)) if settings.run_worker else None
     task = asyncio.create_task(_housekeeping(repo, tenant_db))
     try:
         yield
     finally:
         task.cancel()
+        stop_worker.set()
+        if worker_task:
+            await worker_task
         await tenant_db.close_all()
         await pool.close()
 
@@ -82,6 +98,8 @@ def create_app() -> FastAPI:
     install_error_handlers(app)
     app.include_router(auth_routes.router)
     app.include_router(database_routes.router)
+    app.include_router(channel_routes.router)
+    app.include_router(webhook_routes.router)
 
     @app.get("/healthz", include_in_schema=False)
     async def healthz():
