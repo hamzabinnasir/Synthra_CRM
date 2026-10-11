@@ -67,7 +67,12 @@ inbox/comments/webhook endpoint/queue, needs CRM_TEST_DATABASE_URL).
 Stage 3 frontend foundation (frontend/): DONE, unrun (run `npm install` + `npm run typecheck` + `npm run dev`): auth pages, API client, app shell, overview.
 Stage 4 setup flows: WRITTEN, unrun (same commands). /settings/database (connect+test, dry-run preview, apply, migration table, manual SQL, disconnect),
 /settings/channels (overview) and /settings/channels/[id] (credentials, webhook URL+verify token, bot behaviour, test, remove). Nav entries enabled.
-Stage 5 dashboards: TODO (nav items still flagged `soon` in lib/nav.ts; flip to enable). Stage 6 docs/deploy/OWASP: TODO.
+Stage 5 dashboards: WRITTEN, unrun. Inbox (3 platforms): /inbox/[platform] (list+search+filters, chat, send text/image, bot toggle,
+handoff resolve, rename, clear history, delete message, live refresh). Comments (FB, IG): /comments/[platform] (filters, public/private reply,
+hide, bot toggle, delete platform-first, bulk delete with per-item failures). Knowledge base: /knowledge-base (upload file or paste text, document list
+with inline delete confirm, retrieval test). Analytics: /analytics (7/14/30/90 d, KPIs, stacked daily bars in plain CSS, by-channel table, comment tone/action).
+Notifications: /notifications (unread filter, mark one/all read, keyset "load more", links to inbox/comments). Nav has no `soon` entries left.
+Stage 6 docs/deploy/OWASP: TODO.
 
 ## Conventions
 - `from __future__ import annotations`; one `router = APIRouter(prefix="/api/<x>")` per file; services live on app.state.
@@ -94,9 +99,9 @@ Tests: python -m pytest -q   (integration tests skipped unless CRM_TEST_DATABASE
        `python scripts/dev_postgres.py` needs Python 3.9–3.12, pgserver has no 3.13 wheels)
 
 ## Frontend (synthra-crm/frontend; Next 16 + React 19 + TS + Tailwind 4)
-- src/lib/: api.ts (client, authApi, ApiError), settings-api.ts (databaseApi, channelsApi, types, errorText, option lists), channel-status.ts, auth-context.tsx (AuthProvider/useAuth), guards.ts (useRequireAuth/useRedirectIfAuthenticated), nav.ts
-- src/components/: ui.tsx (Button, Input, Alert, Card, Spinner, Logo), form.tsx (PageHeader, SectionCard, Badge, Textarea, Select, Toggle, CopyField, Skeleton), app-shell.tsx (sidebar/drawer/user menu), icons.tsx
-- src/app/: (auth)/{login,register,verify-email,forgot-password,reset-password} · (app)/dashboard · (app)/settings/{database,channels,channels/[id]} · error.tsx · not-found.tsx
+- src/lib/: api.ts (client, authApi, ApiError), settings-api.ts (databaseApi, channelsApi, types, errorText, option lists), inbox-api.ts (inboxApi, fetchMediaBlob, isSetupError), comments-api.ts (commentsApi), kb-api.ts (kbApi, describeIndexResult, formatBytes), insights-api.ts (insightsApi: analytics/notifications, formatSeconds, timeAgo), live.ts (useLiveMarks: SSE via fetch, auto-reconnect), channel-status.ts, auth-context.tsx (AuthProvider/useAuth), guards.ts (useRequireAuth/useRedirectIfAuthenticated), nav.ts
+- src/components/: ui.tsx (Button, Input, Alert, Card, Spinner, Logo), form.tsx (PageHeader, SectionCard, Badge, Textarea, Select, Toggle, CopyField, Skeleton), inbox.tsx (InboxView), comments.tsx (CommentsView), knowledge-base.tsx, analytics.tsx, notifications.tsx, app-shell.tsx (sidebar/drawer/user menu), icons.tsx
+- src/app/: (auth)/{login,register,verify-email,forgot-password,reset-password} · (app)/dashboard · (app)/settings/{database,channels,channels/[id]} · (app)/inbox/[platform] · (app)/comments/[platform] · (app)/{knowledge-base,analytics,notifications} · error.tsx · not-found.tsx
   (page.tsx files must export only the default component; shared helpers go in lib/.)
 - Optional env NEXT_PUBLIC_DOCS_URL: base URL of the published docs folder; channel pages link their guide there once set.
 - Env: NEXT_PUBLIC_API_URL (API origin as the browser sees it; app+API must be same-site for the SameSite=strict cookie).
@@ -105,10 +110,10 @@ Tests: python -m pytest -q   (integration tests skipped unless CRM_TEST_DATABASE
 
 ## Known issues / TODOs
 1. (Stage 1, done) api/insights.py added: analytics, notifications, activity, SSE stream; .env.example completed; tests/test_app_boot.py guards route registration.
-3. Stray file `synthra-crm/ynthra-crm` holds `git diff --stat` output (bad redirect) -> delete if still present.
 4. Tests cover only auth, channels, tenantdb. No tests for bot engine, kb, inbox, comments, webhooks, media. No frontend tests yet.
-5. No README yet. Registry expects docs at /docs/channels/*.md (not verified to exist). Frontend (Stage 3) was written without a shell: run typecheck/dev once.
+5. No README yet. Registry expects docs at /docs/channels/*.md (not verified to exist). Frontend (Stages 3-5) was written without a shell: run typecheck/dev once (editor diagnostics show no TS errors).
 6. Git warns LF->CRLF on Windows; consider a .gitattributes.
+9. notifications.tsx routes by `source_type` containing "comment" (-> /comments/<platform>) else /inbox/<platform>; the engine's actual type/source_type values were not verified.
 7. Sibling folder ../fbbot (with whatsapp-dashboard, Next 16 JS, single-tenant, direct Supabase) is the earlier standalone bot; reuse its UI ideas
    (ConversationList, MediaMessage, NotificationCenter, hooks) for Stage 5 but rewire to this API.
 8. Unverified (skimmed only): channels/service.py, channels/events.py, bot/prompts.py, bot/parsing.py, crm/lookups.py,

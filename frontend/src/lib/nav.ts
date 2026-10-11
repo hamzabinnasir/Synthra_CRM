@@ -19,24 +19,24 @@ export const NAV: NavGroup[] = [
   {
     title: "Inboxes",
     items: [
-      { label: "WhatsApp", href: "/inbox/whatsapp", icon: "chat", soon: true },
-      { label: "Facebook", href: "/inbox/facebook", icon: "chat", soon: true },
-      { label: "Instagram", href: "/inbox/instagram", icon: "chat", soon: true },
+      { label: "WhatsApp", href: "/inbox/whatsapp", icon: "chat" },
+      { label: "Facebook", href: "/inbox/facebook", icon: "chat" },
+      { label: "Instagram", href: "/inbox/instagram", icon: "chat" },
     ],
   },
   {
     title: "Comments",
     items: [
-      { label: "Facebook", href: "/comments/facebook", icon: "comment", soon: true },
-      { label: "Instagram", href: "/comments/instagram", icon: "comment", soon: true },
+      { label: "Facebook", href: "/comments/facebook", icon: "comment" },
+      { label: "Instagram", href: "/comments/instagram", icon: "comment" },
     ],
   },
   {
     title: "Bot",
     items: [
-      { label: "Knowledge base", href: "/knowledge-base", icon: "book", soon: true },
-      { label: "Analytics", href: "/analytics", icon: "chart", soon: true },
-      { label: "Notifications", href: "/notifications", icon: "bell", soon: true },
+      { label: "Knowledge base", href: "/knowledge-base", icon: "book" },
+      { label: "Analytics", href: "/analytics", icon: "chart" },
+      { label: "Notifications", href: "/notifications", icon: "bell" },
     ],
   },
   {
