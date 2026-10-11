@@ -29,6 +29,7 @@ log = logging.getLogger("app.channels")
 DEFAULT_BEHAVIOUR: Dict[str, str] = {
     "llm_provider": "anthropic", "llm_model": "", "system_prompt": "", "tone": "friendly",
     "spam_action": "none", "abuse_action": "none", "business_phone": "",
+    "pause_on_human": "true", "handoff_message": "", "fallback_message": "",
 }
 
 

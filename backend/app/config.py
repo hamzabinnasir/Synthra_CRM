@@ -51,6 +51,15 @@ class Settings(BaseSettings):
     webhook_rate_per_minute: int = Field(1200, alias="CRM_WEBHOOK_RATE_PER_MINUTE", ge=10)
     run_worker: bool = Field(True, alias="CRM_RUN_WORKER")   # set false on API-only replicas
     worker_concurrency: int = Field(8, alias="CRM_WORKER_CONCURRENCY", ge=1, le=64)
+    # Bot engine, LLM and knowledge base
+    # Each workspace brings its own LLM key; this cap only protects the key (and the user's bill) from loops/abuse.
+    llm_daily_calls: int = Field(2000, alias="CRM_LLM_DAILY_CALLS", ge=1)
+    llm_timeout_seconds: float = Field(25.0, alias="CRM_LLM_TIMEOUT_SECONDS", ge=3, le=120)
+    # fastembed = real semantic embeddings (downloads a ~90 MB model once); hash = offline/dev fallback.
+    embedder: str = Field("fastembed", alias="CRM_EMBEDDER", pattern=r"^(fastembed|hash)$")
+    max_upload_bytes: int = Field(5_000_000, alias="CRM_MAX_UPLOAD_BYTES", ge=10_000)
+    max_media_bytes: int = Field(16_000_000, alias="CRM_MAX_MEDIA_BYTES", ge=100_000)
+    max_kb_documents: int = Field(200, alias="CRM_MAX_KB_DOCUMENTS", ge=1)
 
     # Auth policy
     access_ttl_minutes: int = Field(10, alias="CRM_ACCESS_TTL_MINUTES", ge=1, le=60)

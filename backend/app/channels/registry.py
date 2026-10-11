@@ -157,7 +157,8 @@ CHANNEL_IDS: Tuple[str, ...] = tuple(CHANNELS)
 
 # Non-secret bot behaviour, the same on every channel.
 BEHAVIOUR_FIELDS = ("llm_provider", "llm_model", "system_prompt", "tone", "spam_action", "abuse_action",
-                    "business_phone")
+                    "business_phone", "pause_on_human", "handoff_message", "fallback_message")
+CANNED_MAX = 500
 SYSTEM_PROMPT_MAX = 8000
 _PHONE = re.compile(r"^\+?[0-9 ()\-]{6,24}$")
 
@@ -223,6 +224,10 @@ def validate_behaviour(raw: Dict[str, object]) -> Dict[str, str]:
             errors[key] = f"Too long (maximum {SYSTEM_PROMPT_MAX} characters)."
         elif key == "llm_model" and not re.fullmatch(r"[A-Za-z0-9._:\-/]{1,100}", value or "x"):
             errors[key] = "Model names use letters, digits and . _ : - / only."
+        elif key == "pause_on_human" and value not in ("true", "false"):
+            errors[key] = "Choose true or false."
+        elif key in ("handoff_message", "fallback_message") and len(value) > CANNED_MAX:
+            errors[key] = f"Too long (maximum {CANNED_MAX} characters)."
         elif key == "business_phone" and value and not _PHONE.match(value):
             errors[key] = "Enter a phone number such as +92 300 1234567."
         else:
