@@ -161,7 +161,6 @@ class TenantDatabaseService:
             pool = await asyncpg.create_pool(
                 host=address, port=target.port, user=target.user, password=target.password,
                 database=target.database, ssl=provisioner._ssl_context(target),
-                server_hostname=target.host if target.sslmode != "disable" else None,
                 min_size=0, max_size=4, timeout=10, command_timeout=30, statement_cache_size=0,
                 max_inactive_connection_lifetime=120, init=_init_connection,
                 server_settings={"application_name": "synthra-crm"})

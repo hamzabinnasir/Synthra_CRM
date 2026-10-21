@@ -229,7 +229,7 @@ export function KnowledgeBaseView() {
       </SectionCard>
 
       <SectionCard title="Test retrieval" description="See which passages the bot would find for a customer question.">
-        <form onSubmit={runSearch} className="flex flex-wrap items-end gap-3">
+        <form onSubmit={runSearch} className="sticky top-16 z-20 -mx-2 flex flex-wrap items-end gap-3 rounded-lg bg-surface px-2 py-2">
           <div className="min-w-[16rem] flex-1">
             <Input label="Question" value={query} onChange={(e) => setQuery(e.target.value)} maxLength={500} placeholder="What is your return policy?" />
           </div>

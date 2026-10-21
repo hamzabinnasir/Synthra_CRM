@@ -172,7 +172,6 @@ async def connect(target: Target, *, allow_private: bool, timeout: float = 10.0)
             return await asyncpg.connect(
                 host=address, port=target.port, user=target.user, password=target.password,
                 database=target.database, ssl=_ssl_context(target), timeout=timeout,
-                server_hostname=target.host if target.sslmode != "disable" else None,
                 statement_cache_size=0, command_timeout=60,
                 server_settings={"application_name": "synthra-crm"})
         except (asyncpg.InvalidPasswordError, asyncpg.InvalidCatalogNameError) as exc:

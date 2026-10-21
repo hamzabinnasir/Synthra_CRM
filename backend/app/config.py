@@ -4,10 +4,10 @@ from __future__ import annotations
 import base64
 import binascii
 from functools import lru_cache
-from typing import List, Optional
+from typing import Annotated, List, Optional
 
 from pydantic import Field, field_validator, model_validator
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 
 def _check_key(value: str, name: str) -> str:
@@ -37,7 +37,8 @@ class Settings(BaseSettings):
 
     # Web
     public_url: str = Field("http://localhost:3000", alias="CRM_PUBLIC_URL")
-    allowed_origins: List[str] = Field(default_factory=list, alias="CRM_ALLOWED_ORIGINS")
+    # Comma-separated in .env (NoDecode skips pydantic-settings' JSON parsing so _split_origins gets the raw string).
+    allowed_origins: Annotated[List[str], NoDecode] = Field(default_factory=list, alias="CRM_ALLOWED_ORIGINS")
     trusted_proxy_hops: int = Field(0, alias="CRM_TRUSTED_PROXY_HOPS", ge=0, le=5)
     # Public base URL of THIS API as Meta reaches it; webhook URLs shown in the dashboard are built from it.
     api_public_url: str = Field("http://localhost:8000", alias="CRM_API_PUBLIC_URL")

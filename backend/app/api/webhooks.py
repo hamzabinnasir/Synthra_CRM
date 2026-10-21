@@ -1,8 +1,21 @@
-"""Public webhook endpoints, one URL per workspace and channel:  /webhooks/{tenant_id}/{channel}
+"""Public webhook endpoints, one URL per workspace and PLATFORM:  /webhooks/{tenant_id}/{platform}
+
+    whatsapp   -> whatsapp
+    facebook   -> facebook_inbox + facebook_comments     (one Meta "page" subscription carries both)
+    instagram  -> instagram_inbox + instagram_comments   (one Meta "instagram" subscription carries both)
+
+Meta allows a single callback URL per object per app, so the three URLs above are everything a workspace
+configures in Meta. A request is verified once, then fanned out: each configured channel of the platform
+parses the payload for its own kind of event (messages or comments) and queues it under its own channel id,
+which is what the bot engine's per-channel handlers consume.
+
+Per-channel URLs (/webhooks/{tenant}/facebook_comments and so on) from earlier versions still work and serve
+only that channel, so callbacks already saved in Meta keep delivering.
 
 Security rules
-* Meta's X-Hub-Signature-256 is verified with the workspace's own app secret against the raw bytes.
-* Every failure (unknown workspace, unknown channel, unconfigured, wrong token, bad signature) returns the
+* Meta's X-Hub-Signature-256 is verified with the workspace's own app secret against the raw bytes. A channel
+  receives events only if its own app secret validates the signature.
+* Every failure (unknown workspace, unknown platform, unconfigured, wrong token, bad signature) returns the
   same bare 403, so the endpoint cannot be used to discover which workspaces exist.
 * The body is size-limited while it is read, nothing is parsed before the signature is valid, and nothing
   from the payload is logged.
@@ -21,7 +34,7 @@ from fastapi.responses import JSONResponse, PlainTextResponse
 
 from ..channels import events as event_parser
 from ..channels import signature
-from ..channels.registry import get_channel
+from ..channels.registry import resolve_webhook_target
 from ..errors import TooManyRequests
 
 log = logging.getLogger("app.webhooks")
@@ -59,37 +72,43 @@ async def _hit(request: Request, key: str, window: int, limit: int) -> None:
         raise TooManyRequests(retry)
 
 
-@router.get("/webhooks/{tenant_id}/{channel_id}")
-async def verify(tenant_id: str, channel_id: str, request: Request):
-    """Meta's one-time subscription handshake."""
+@router.get("/webhooks/{tenant_id}/{target}")
+async def verify(tenant_id: str, target: str, request: Request):
+    """Meta's one-time subscription handshake. Succeeds if the token matches any channel of the platform."""
     tid = _uuid(tenant_id)
-    if tid is None or get_channel(channel_id) is None:
+    platform, channels = resolve_webhook_target(target)
+    if tid is None or platform is None:
         return _deny()
     await _hit(request, f"wh:verify:{tid}", 3600, 120)
-    config = await request.app.state.channels.webhook_config(tid, channel_id)
+    targets = await request.app.state.channels.webhook_targets(tid, channels)
     params = request.query_params
     challenge = signature.safe_challenge(params.get("hub.challenge"))
-    if (config and params.get("hub.mode") == "subscribe" and challenge
-            and signature.valid_verify_token(config.verify_token, params.get("hub.verify_token"))):
+    supplied = params.get("hub.verify_token")
+    token_ok = any([signature.valid_verify_token(t.config.verify_token, supplied) for t in targets])
+    if params.get("hub.mode") == "subscribe" and challenge and token_ok:
         return PlainTextResponse(challenge)
     return _deny()
 
 
-@router.post("/webhooks/{tenant_id}/{channel_id}")
-async def receive(tenant_id: str, channel_id: str, request: Request):
+@router.post("/webhooks/{tenant_id}/{target}")
+async def receive(tenant_id: str, target: str, request: Request):
     settings = request.app.state.settings
-    tid, channel = _uuid(tenant_id), get_channel(channel_id)
-    if tid is None or channel is None:
+    tid = _uuid(tenant_id)
+    platform, channels = resolve_webhook_target(target)
+    if tid is None or platform is None:
         return _deny()
     body = await _read_limited(request, settings.webhook_max_body_bytes)
     if body is None:
         return PlainTextResponse("Payload too large", status_code=413)
 
-    config = await request.app.state.channels.webhook_config(tid, channel_id)
-    if config is None or not signature.valid_signature(config.app_secret, body, request.headers.get("x-hub-signature-256")):
-        log.warning("webhook_rejected", extra={"channel": channel_id, "tenant": str(tid)})
+    targets = await request.app.state.channels.webhook_targets(tid, channels)
+    header = request.headers.get("x-hub-signature-256")
+    signed = [t for t in targets if signature.valid_signature(t.config.app_secret, body, header)]
+    if not signed:
+        log.warning("webhook_rejected", extra={"channel": target, "tenant": str(tid)})
         return _deny()
-    if not config.enabled:
+    live = [t for t in signed if t.config.enabled]
+    if not live:
         return JSONResponse({"status": "ignored", "reason": "channel_disabled"})
     await _hit(request, f"wh:rate:{tid}", 60, settings.webhook_rate_per_minute)
 
@@ -97,6 +116,12 @@ async def receive(tenant_id: str, channel_id: str, request: Request):
         payload = json.loads(body)
     except ValueError:
         return PlainTextResponse("Invalid JSON", status_code=400)
-    extracted = event_parser.extract(channel, config.account_id, payload)
-    queued = await request.app.state.queue.enqueue(tid, channel_id, extracted.events)
-    return JSONResponse({"received": len(extracted.events), "queued": queued, "skipped": extracted.skipped})
+
+    received = queued = skipped = 0
+    for t in live:
+        extracted = event_parser.extract(t.channel, t.config.account_id, payload)
+        received += len(extracted.events)
+        skipped = max(skipped, extracted.skipped)       # the same entry is seen by each channel; count it once
+        if extracted.events:
+            queued += await request.app.state.queue.enqueue(tid, t.channel.id, extracted.events)
+    return JSONResponse({"received": received, "queued": queued, "skipped": skipped})

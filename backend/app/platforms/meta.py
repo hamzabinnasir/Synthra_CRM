@@ -217,6 +217,53 @@ class MetaClient:
         return {"id": str(author["id"]) if author.get("id") else None,
                 "username": str(username).lstrip("@").casefold() if username else None}
 
+    async def own_username(self) -> Optional[str]:
+        """This account's Instagram username (lower-case); None on other platforms or when unavailable."""
+        return await self._own_name()
+
+    async def comment_tags_us(self, comment_id: str) -> bool:
+        """Facebook only: does this comment tag our Page? (Instagram mentions are matched on the text.)"""
+        if self.platform != "facebook":
+            return False
+        body = await self._call("GET", safe_id(comment_id), params={"fields": "message_tags"}, idempotent=True)
+        tags = body.get("message_tags")
+        return isinstance(tags, list) and any(
+            isinstance(tag, dict) and str(tag.get("id", "")) == self.account_id for tag in tags)
+
+    async def thread_replies(self, parent_id: str) -> List[Dict[str, Optional[str]]]:
+        """Replies under a top-level comment, oldest first: [{id, author_id, username}].
+
+        Meta flattens threads to two levels, so every reply (including replies to replies) is listed here.
+        """
+        pid = safe_id(parent_id)
+        instagram = self.platform == "instagram"
+        edge = "replies" if instagram else "comments"
+        fields = "id,username,from,timestamp" if instagram else "id,from,created_time"
+        rows: List[Dict[str, Any]] = []
+        after: Optional[str] = None
+        for _ in range(10):                                    # at most 10 pages
+            params: Dict[str, Any] = {"fields": fields, "limit": 50}
+            if not instagram:
+                params["order"] = "chronological"
+            if after:
+                params["after"] = after
+            body = await self._call("GET", f"{pid}/{edge}", params=params, idempotent=True)
+            rows.extend(r for r in body.get("data") or [] if isinstance(r, dict) and r.get("id"))
+            paging = body.get("paging") or {}
+            after = (paging.get("cursors") or {}).get("after")
+            if not after or not paging.get("next"):
+                break
+        # Instagram does not promise an order: sort on the timestamp (ISO strings sort correctly); stable otherwise.
+        rows.sort(key=lambda r: str(r.get("timestamp") or r.get("created_time") or ""))
+        out: List[Dict[str, Optional[str]]] = []
+        for row in rows:
+            author = row.get("from") if isinstance(row.get("from"), dict) else {}
+            username = row.get("username") or author.get("username")
+            out.append({"id": str(row["id"]),
+                        "author_id": str(author["id"]) if author.get("id") else None,
+                        "username": str(username).lstrip("@").casefold() if username else None})
+        return out
+
     async def _own_name(self) -> Optional[str]:
         if self.platform != "instagram":
             return None

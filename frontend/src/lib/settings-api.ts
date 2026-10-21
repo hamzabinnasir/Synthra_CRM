@@ -118,7 +118,7 @@ export interface ChannelView {
   values: Record<string, FieldValue>;
   missing: string[];
   behaviour: Behaviour;
-  webhook: { url: string; verify_token: string; subscribe_to: string[] };
+  webhook: { url: string; verify_token: string; subscribe_to: string[]; shared_with: string[] };
 }
 
 export interface ChannelTestResult {

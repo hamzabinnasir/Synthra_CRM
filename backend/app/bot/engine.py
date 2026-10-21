@@ -43,6 +43,7 @@ log = logging.getLogger("app.bot")
 
 Handler = Callable[[QueuedEvent], Awaitable[None]]
 _PLACEHOLDER = re.compile(r"\[[A-Za-z ]+\]")
+MAX_BOT_REPLIES_PER_THREAD = 5      # safety stop for nested comment threads
 
 
 @dataclass
@@ -369,13 +370,65 @@ class BotEngine:
             await record("moderation_failed", verdict)
             return
         is_reply = bool(parsed.parent_id and parsed.parent_id != parsed.post_id)
-        if is_reply or tone == "spam" or not parsed.message.strip():
+        if tone == "spam" or not parsed.message.strip():
             await record("recorded", verdict)
+            return
+        if is_reply and not await self._nested_reply_wanted(ctx, parsed):
+            await record("recorded", verdict)            # chatter between customers: stored, never answered
             return
         private = bool(verdict["private"])
         reply = await self._comment_reply(ctx, parsed, tone, private)
         done = await self._send_comment_reply(ctx, parsed, reply, tone, private)
         await record(done[0], verdict, done[1])
+
+    async def _nested_reply_wanted(self, ctx: Ctx, parsed: parsing.ParsedComment) -> bool:
+        """Decide whether a comment inside a thread is aimed at us. Customer-to-customer chatter is ignored.
+
+        Meta flattens threads to two levels, so a reply to OUR reply arrives with the top-level comment as its
+        parent. We answer when any of these holds:
+          1. the comment mentions our account;
+          2. the top-level comment was written by our account;
+          3. the comment right before it in the thread is ours and the commenter was already in the thread.
+        Our own replies are not stored locally, so the thread is read from the platform. A hard cap on our replies
+        per thread stops endless back-and-forth (for example with another bot).
+        """
+        client, parent = ctx.client, parsed.parent_id
+        if not parent:
+            return False
+        own_id = ctx.account_id
+        try:
+            own_name = await client.own_username()
+            if own_name and re.search(rf"(?<![\w.])@{re.escape(own_name)}(?![\w.])", parsed.message.casefold()):
+                mention = True
+            else:
+                mention = await client.comment_tags_us(parsed.comment_id)
+            top = await client.comment_author(parent)
+            thread = await client.thread_replies(parent)
+        except MetaError as exc:
+            if exc.is_auth or (exc.retryable and ctx.attempts < MAX_ATTEMPTS):
+                raise                                   # let the queue retry; do not silently skip
+            return False
+
+        def is_us(author_id: Optional[str], username: Optional[str]) -> bool:
+            return bool((author_id and author_id == own_id) or (own_name and username and username == own_name))
+
+        def is_commenter(author_id: Optional[str], username: Optional[str]) -> bool:
+            if parsed.from_id and author_id:
+                return author_id == parsed.from_id
+            mine = (parsed.from_username or "").lstrip("@").casefold()
+            return bool(mine and username and username == mine)
+
+        ours = sum(1 for r in thread if is_us(r["author_id"], r["username"]))
+        if ours >= MAX_BOT_REPLIES_PER_THREAD:
+            return False
+        if mention or is_us(top["id"], top["username"]):
+            return True
+        position = next((i for i, r in enumerate(thread) if r["id"] == parsed.comment_id), len(thread))
+        before = thread[:position]
+        if not before or not is_us(before[-1]["author_id"], before[-1]["username"]):
+            return False
+        return is_commenter(top["id"], top["username"]) or any(
+            is_commenter(r["author_id"], r["username"]) for r in before)
 
     async def _classify(self, ctx: Ctx, message: str) -> Dict[str, Any]:
         if not message.strip() or textlib.looks_like_spam(message):

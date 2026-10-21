@@ -22,6 +22,6 @@ def test_all_routers_registered(app):
     expected = ("/healthz", "/readyz", "/api/auth/login", "/api/database", "/api/channels", "/api/inbox/{platform}/conversations",
                 "/api/comments/{platform}", "/api/kb", "/api/media/{media_id}", "/api/analytics", "/api/notifications",
                 "/api/notifications/unread-count", "/api/notifications/read", "/api/activity", "/api/events",
-                "/webhooks/{tenant_id}/{channel_id}")
+                "/webhooks/{tenant_id}/{target}")
     missing = [path for path in expected if path not in paths]
     assert not missing, f"routes not registered: {missing}"

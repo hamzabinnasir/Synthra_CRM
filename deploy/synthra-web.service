@@ -1,0 +1,31 @@
+# Synthra CRM dashboard (Next.js). Replaces the old frontend/Dockerfile.
+# Build first (NEXT_PUBLIC_API_URL is baked in at build time, set it in frontend/.env.production):
+#   cd /opt/synthra-crm/frontend && npm ci && npm run build
+# Install: copy to /etc/systemd/system/synthra-web.service, then
+#   sudo systemctl daemon-reload && sudo systemctl enable --now synthra-web
+# Adjust ExecStart if `which npm` is not /usr/bin/npm (for example with nvm or NodeSource installs).
+[Unit]
+Description=Synthra CRM dashboard
+After=network-online.target synthra-api.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=synthra
+Group=synthra
+WorkingDirectory=/opt/synthra-crm/frontend
+Environment=NODE_ENV=production
+Environment=NEXT_TELEMETRY_DISABLED=1
+ExecStart=/usr/bin/npm run start -- --hostname 127.0.0.1 --port 3000
+Restart=on-failure
+RestartSec=3
+
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+# Next.js writes its runtime cache under .next/
+ReadWritePaths=/opt/synthra-crm/frontend/.next
+
+[Install]
+WantedBy=multi-user.target

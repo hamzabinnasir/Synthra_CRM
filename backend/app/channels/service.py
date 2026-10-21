@@ -6,6 +6,9 @@ Storage layout (control database, table channel_configs):
 
 Secrets are never returned to the browser. The only credential the dashboard may display in full is the
 webhook verify token, because the user has to paste it into Meta; it can be rotated at any time.
+
+Webhooks are per PLATFORM (whatsapp | facebook | instagram), not per channel: the channels of one platform
+(for example facebook_inbox and facebook_comments) share a single callback URL and a single verify token.
 """
 from __future__ import annotations
 
@@ -14,7 +17,7 @@ import logging
 import secrets
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Iterable, List, Optional
 from uuid import UUID
 
 import asyncpg
@@ -22,7 +25,8 @@ import asyncpg
 from ..config import Settings
 from ..security.crypto import DecryptionError, SecretBox, mask_secret
 from . import probe
-from .registry import (CHANNEL_IDS, Channel, ValidationFailed, get_channel, validate_behaviour, validate_values)
+from .registry import (CHANNEL_IDS, Channel, ValidationFailed, channels_for_platform, get_channel,
+                       validate_behaviour, validate_values, webhook_fields_for_platform)
 
 log = logging.getLogger("app.channels")
 
@@ -51,6 +55,13 @@ class WebhookConfig:
     account_id: str
 
 
+@dataclass(frozen=True)
+class WebhookTarget:
+    """One configured channel that a webhook request may be delivered to."""
+    channel: Channel
+    config: WebhookConfig
+
+
 class ChannelService:
     def __init__(self, pool: asyncpg.Pool, box: SecretBox, settings: Settings) -> None:
         self._pool, self._box, self._settings = pool, box, settings
@@ -61,7 +72,9 @@ class ChannelService:
         return f"{tenant_id}:{channel_id}:secrets"
 
     def webhook_url(self, tenant_id: UUID, channel_id: str) -> str:
-        return f"{self._settings.api_public_url.rstrip('/')}/webhooks/{tenant_id}/{channel_id}"
+        """The callback URL for the channel's PLATFORM; every channel of that platform shares it."""
+        platform = self._channel(channel_id).platform
+        return f"{self._settings.api_public_url.rstrip('/')}/webhooks/{tenant_id}/{platform}"
 
     def _open(self, tenant_id: UUID, channel_id: str, row: asyncpg.Record) -> Dict[str, str]:
         if not row["encrypted_secrets"]:
@@ -79,12 +92,34 @@ class ChannelService:
             raise NotFound("Unknown channel.", code="unknown_channel")
         return channel
 
+    async def _shared_verify_token(self, conn: asyncpg.Connection, tenant_id: UUID, channel: Channel) -> Optional[str]:
+        """The verify token already used by another channel of the same platform, if there is one."""
+        sibling_ids = [c.id for c in channels_for_platform(channel.platform) if c.id != channel.id]
+        if not sibling_ids:
+            return None
+        rows = await conn.fetch(
+            "select channel, encrypted_secrets from channel_configs "
+            "where tenant_id = $1 and channel = any($2::text[]) order by created_at, channel", tenant_id, sibling_ids)
+        for row in rows:
+            try:
+                token = self._open(tenant_id, row["channel"], row).get("verify_token", "")
+            except DecryptionError:
+                continue
+            if token:
+                return token
+        return None
+
     async def _ensure(self, conn: asyncpg.Connection, tenant_id: UUID, channel: Channel) -> asyncpg.Record:
-        """Fetch the row, creating it (with a fresh verify token) the first time a channel is opened."""
+        """Fetch the row, creating it the first time a channel is opened.
+
+        A new channel adopts its platform's existing verify token, so the platform's single webhook has
+        one token no matter which channel page the user copies it from.
+        """
         row = await conn.fetchrow("select * from channel_configs where tenant_id = $1 and channel = $2 for update",
                                   tenant_id, channel.id)
         if row is None:
-            sealed = self._seal(tenant_id, channel.id, {"verify_token": secrets.token_urlsafe(32)})
+            token = await self._shared_verify_token(conn, tenant_id, channel) or secrets.token_urlsafe(32)
+            sealed = self._seal(tenant_id, channel.id, {"verify_token": token})
             await conn.execute(
                 "insert into channel_configs (tenant_id, channel, encrypted_secrets, settings) values ($1, $2, $3, $4::jsonb) "
                 "on conflict (tenant_id, channel) do nothing",
@@ -113,8 +148,13 @@ class ChannelService:
             "last_error": row["last_error"],
             "values": values, "missing": missing,
             "behaviour": {**DEFAULT_BEHAVIOUR, **settings.get("behaviour", {})},
-            "webhook": {"url": self.webhook_url(tenant_id, channel.id), "verify_token": secret_map.get("verify_token", ""),
-                        "subscribe_to": list(channel.webhook_fields)},
+            "webhook": {
+                "url": self.webhook_url(tenant_id, channel.id),
+                "verify_token": secret_map.get("verify_token", ""),
+                # One subscription per platform, so it must include the fields of every channel on it.
+                "subscribe_to": list(webhook_fields_for_platform(channel.platform)),
+                "shared_with": [c.title for c in channels_for_platform(channel.platform) if c.id != channel.id],
+            },
         }
 
     # ---- dashboard operations --------------------------------------------------------------
@@ -175,14 +215,20 @@ class ChannelService:
         return self._view(tenant_id, channel, row)
 
     async def rotate_verify_token(self, tenant_id: UUID, channel_id: str) -> Dict[str, Any]:
+        """New verify token for the whole platform webhook (every channel on it keeps the same token)."""
         channel = self._channel(channel_id)
+        token = secrets.token_urlsafe(32)
         async with self._pool.acquire() as conn, conn.transaction():
-            row = await self._ensure(conn, tenant_id, channel)
-            secret_map = self._open(tenant_id, channel.id, row)
-            secret_map["verify_token"] = secrets.token_urlsafe(32)
-            await conn.execute("update channel_configs set encrypted_secrets = $3, updated_at = $4 "
-                               "where tenant_id = $1 and channel = $2",
-                               tenant_id, channel.id, self._seal(tenant_id, channel.id, secret_map), _now())
+            await self._ensure(conn, tenant_id, channel)
+            rows = await conn.fetch(
+                "select * from channel_configs where tenant_id = $1 and channel = any($2::text[]) for update",
+                tenant_id, [c.id for c in channels_for_platform(channel.platform)])
+            for sibling in rows:
+                secret_map = self._open(tenant_id, sibling["channel"], sibling)
+                secret_map["verify_token"] = token
+                await conn.execute("update channel_configs set encrypted_secrets = $3, updated_at = $4 "
+                                   "where tenant_id = $1 and channel = $2",
+                                   tenant_id, sibling["channel"], self._seal(tenant_id, sibling["channel"], secret_map), _now())
             row = await conn.fetchrow("select * from channel_configs where tenant_id = $1 and channel = $2",
                                       tenant_id, channel.id)
         return self._view(tenant_id, channel, row)
@@ -214,22 +260,40 @@ class ChannelService:
         return {"ok": result.ok, "message": result.message, "details": result.details, "warnings": result.warnings}
 
     # ---- used by the webhook handler and the bot engine -------------------------------------
+    def _webhook_config(self, tenant_id: UUID, channel: Channel, row: asyncpg.Record) -> Optional[WebhookConfig]:
+        try:
+            secret_map = self._open(tenant_id, channel.id, row)
+        except DecryptionError:
+            log.error("channel_secret_unreadable", extra={"channel": channel.id})
+            return None
+        account = _json(row["settings"]).get("values", {}).get(channel.account_field, "")
+        return WebhookConfig(bool(row["enabled"]), secret_map.get("app_secret", ""), secret_map.get("verify_token", ""), account)
+
     async def webhook_config(self, tenant_id: UUID, channel_id: str) -> Optional[WebhookConfig]:
-        if get_channel(channel_id) is None:
+        channel = get_channel(channel_id)
+        if channel is None:
             return None
         row = await self._pool.fetchrow(
             "select enabled, encrypted_secrets, settings from channel_configs where tenant_id = $1 and channel = $2",
             tenant_id, channel_id)
-        if row is None:
-            return None
-        try:
-            secret_map = self._open(tenant_id, channel_id, row)
-        except DecryptionError:
-            log.error("channel_secret_unreadable", extra={"channel": channel_id})
-            return None
-        channel = get_channel(channel_id)
-        account = _json(row["settings"]).get("values", {}).get(channel.account_field, "")
-        return WebhookConfig(bool(row["enabled"]), secret_map.get("app_secret", ""), secret_map.get("verify_token", ""), account)
+        return self._webhook_config(tenant_id, channel, row) if row is not None else None
+
+    async def webhook_targets(self, tenant_id: UUID, channels: Iterable[Channel]) -> List[WebhookTarget]:
+        """Every readable, configured channel among `channels`, in one query (a platform webhook serves several)."""
+        by_id = {c.id: c for c in channels}
+        if not by_id:
+            return []
+        rows = await self._pool.fetch(
+            "select channel, enabled, encrypted_secrets, settings from channel_configs "
+            "where tenant_id = $1 and channel = any($2::text[])", tenant_id, list(by_id))
+        targets = []
+        for row in rows:
+            channel = by_id[row["channel"]]
+            config = self._webhook_config(tenant_id, channel, row)
+            if config is not None:
+                targets.append(WebhookTarget(channel, config))
+        targets.sort(key=lambda t: list(by_id).index(t.channel.id))     # stable, registry order
+        return targets
 
     async def credentials(self, tenant_id: UUID, channel_id: str) -> Optional[Dict[str, Any]]:
         """Full decrypted configuration for the bot engine. Never expose this over HTTP."""

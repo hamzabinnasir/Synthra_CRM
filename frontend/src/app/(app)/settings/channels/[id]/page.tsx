@@ -153,7 +153,8 @@ export default function ChannelSettingsPage() {
 
   async function rotate() {
     if (!ch) return;
-    if (!window.confirm("Generate a new verify token? You must paste the new token into Meta, otherwise Meta cannot re-verify your webhook.")) return;
+    const shared = ch.webhook.shared_with.length > 0 ? ` The token is shared with ${ch.webhook.shared_with.join(" and ")}, so it changes there too.` : "";
+    if (!window.confirm(`Generate a new verify token? You must paste the new token into Meta, otherwise Meta cannot re-verify your webhook.${shared}`)) return;
     setBusy("rotate");
     setError(null);
     try {
@@ -283,6 +284,12 @@ export default function ChannelSettingsPage() {
       </SectionCard>
 
       <SectionCard title="Webhook" description="Paste these two values into Meta so it can send events to Synthra.">
+        {ch.webhook.shared_with.length > 0 && (
+          <p className="rounded-md bg-surface-2 px-3 py-2 text-sm text-muted">
+            This is the single {ch.platform[0].toUpperCase() + ch.platform.slice(1)} webhook. Set it up once in Meta; it also delivers events for{" "}
+            {ch.webhook.shared_with.join(" and ")}, so you do not need a second webhook.
+          </p>
+        )}
         <ol className="list-decimal space-y-1 pl-5 text-sm text-muted">
           <li>{WEBHOOK_STEPS[ch.platform]}</li>
           <li>Paste the callback URL and verify token below, then save in Meta.</li>
@@ -294,8 +301,8 @@ export default function ChannelSettingsPage() {
             ))}
           </li>
         </ol>
-        <CopyField label="Callback URL" value={ch.webhook.url} hint="Unique to your workspace and this channel." />
-        <CopyField label="Verify token" value={ch.webhook.verify_token} concealed hint="Meta sends this back to prove the URL is yours." />
+        <CopyField label="Callback URL" value={ch.webhook.url} hint={`One URL for all ${ch.platform[0].toUpperCase() + ch.platform.slice(1)} channels in your workspace.`} />
+        <CopyField label="Verify token" value={ch.webhook.verify_token} concealed hint="Meta sends this back to prove the URL is yours. The same token is used by every channel on this webhook." />
         <div>
           <Button variant="secondary" onClick={rotate} loading={busy === "rotate"} disabled={busy !== null}>
             Generate new verify token

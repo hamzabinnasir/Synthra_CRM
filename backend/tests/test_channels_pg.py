@@ -308,3 +308,48 @@ async def test_oversized_body_and_rate_limit(control_pool, box):
         assert (await c.post(f"/webhooks/{t}/whatsapp", content=b"x" * 20_000)).status_code == 413
         codes = [(await post(c, t, wa_payload(f"m{i}"))).status_code for i in range(13)]
     assert codes[:10] == [200] * 10 and codes[10:] == [429] * 3
+
+
+# --- unified per-platform webhooks (database-backed) ---------------------------------------
+FB = {"page_id": "111111111111111", "page_access_token": "EAAGfacebooktoken1234567", "app_secret": "f" * 32}
+
+
+async def test_channels_of_one_platform_share_one_url_and_verify_token(control_pool, box):
+    svc, t = service(control_pool, box), await make_tenant(control_pool)
+    inbox, comments = await svc.get(t, "facebook_inbox"), await svc.get(t, "facebook_comments")
+    assert inbox["webhook"]["url"] == comments["webhook"]["url"] == f"https://api.example.com/webhooks/{t}/facebook"
+    assert inbox["webhook"]["verify_token"] == comments["webhook"]["verify_token"]
+    assert inbox["webhook"]["subscribe_to"] == ["messages", "messaging_postbacks", "feed"]
+    assert inbox["webhook"]["shared_with"] == ["Facebook comments"]
+    assert (await svc.get(t, "instagram_inbox"))["webhook"]["verify_token"] != inbox["webhook"]["verify_token"]
+
+
+async def test_rotating_the_verify_token_changes_it_for_the_whole_platform(control_pool, box):
+    svc, t = service(control_pool, box), await make_tenant(control_pool)
+    before = (await svc.get(t, "facebook_inbox"))["webhook"]["verify_token"]
+    await svc.get(t, "facebook_comments")
+    after = (await svc.rotate_verify_token(t, "facebook_comments"))["webhook"]["verify_token"]
+    assert after != before
+    assert (await svc.get(t, "facebook_inbox"))["webhook"]["verify_token"] == after
+    assert (await svc.get(t, "whatsapp"))["webhook"]["verify_token"] not in (before, after)     # other platforms untouched
+
+
+async def test_facebook_webhook_end_to_end_with_the_real_service(control_pool, box):
+    app, t = await webhook_app(control_pool, box), await make_tenant(control_pool)
+    for ch in ("facebook_inbox", "facebook_comments"):
+        await app.state.channels.save(t, ch, values=FB, behaviour={}, enabled=True, bot_enabled=None)
+    payload = {"object": "page", "entry": [
+        {"id": FB["page_id"], "messaging": [{"sender": {"id": "u1"}, "recipient": {"id": FB["page_id"]}, "timestamp": 1,
+                                            "message": {"mid": "m.1", "text": "hi"}}]},
+        {"id": FB["page_id"], "changes": [{"field": "feed", "value": {"item": "comment", "verb": "add",
+                                                                       "comment_id": "111_1", "message": "nice"}}]}]}
+    token = (await app.state.channels.get(t, "facebook_comments"))["webhook"]["verify_token"]
+    async with client(app) as c:
+        hs = await c.get(f"/webhooks/{t}/facebook", params={"hub.mode": "subscribe", "hub.verify_token": token, "hub.challenge": "7"})
+        assert hs.status_code == 200 and hs.text == "7"
+        r = await post(c, t, payload, secret=FB["app_secret"], channel="facebook")
+        assert r.status_code == 200 and r.json()["queued"] == 2
+        assert (await post(c, t, payload, secret=FB["app_secret"], channel="facebook")).json()["queued"] == 0
+    rows = await control_pool.fetch("select channel, event_key from webhook_events order by channel")
+    assert [(r["channel"], r["event_key"]) for r in rows] == [("facebook_comments", "comment:111_1:add"),
+                                                              ("facebook_inbox", "mid:m.1")]

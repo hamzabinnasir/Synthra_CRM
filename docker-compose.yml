@@ -1,0 +1,53 @@
+# Synthra CRM: API + dashboard + the control-plane database, for a single server.
+#
+#   cp .env.example .env      # then fill in the values (see docs/self-hosting.md)
+#   docker compose up -d --build
+#
+# Put an HTTPS reverse proxy (Caddy, nginx, Traefik) in front of ports 8000 and 3000. Do not expose Postgres.
+# Customers' own databases (Supabase etc.) are separate; this Postgres only holds accounts, sessions and encrypted settings.
+
+services:
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: synthra
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+      POSTGRES_DB: synthra_crm
+    volumes:
+      - dbdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U synthra -d synthra_crm"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  api:
+    build: ./backend
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    env_file: .env
+    environment:
+      CRM_DATABASE_URL: postgresql://synthra:${POSTGRES_PASSWORD}@db:5432/synthra_crm
+      CRM_AUTO_MIGRATE: "true"
+    volumes:
+      - models:/models
+    ports:
+      - "127.0.0.1:8000:8000"
+
+  web:
+    build:
+      context: ./frontend
+      args:
+        NEXT_PUBLIC_API_URL: ${CRM_API_PUBLIC_URL:?set CRM_API_PUBLIC_URL in .env}
+    restart: unless-stopped
+    depends_on:
+      - api
+    ports:
+      - "127.0.0.1:3000:3000"
+
+volumes:
+  dbdata:
+  models:

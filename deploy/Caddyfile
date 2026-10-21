@@ -1,0 +1,21 @@
+# HTTPS reverse proxy for Synthra CRM (Caddy gets and renews certificates automatically).
+# Install Caddy natively (https://caddyserver.com/docs/install), copy this to /etc/caddy/Caddyfile, then `sudo systemctl reload caddy`.
+# Replace the two hostnames. They must share a registrable domain (same site) because the login cookie is SameSite=strict.
+# Keep CRM_TRUSTED_PROXY_HOPS=1 in backend/.env (one proxy: Caddy). Do not expose PostgreSQL, 8000 or 3000 publicly.
+
+app.example.com {
+	# The API adds HSTS itself in production; Next.js does not, so add it for the dashboard host here.
+	header Strict-Transport-Security "max-age=63072000"
+	reverse_proxy 127.0.0.1:3000
+}
+
+api.example.com {
+	# Webhook endpoints are public, so cap request bodies at the proxy as well as in the app (CRM_WEBHOOK_MAX_BODY_BYTES).
+	request_body {
+		max_size 20MB
+	}
+	reverse_proxy 127.0.0.1:8000 {
+		# Keep the SSE live-update stream (/api/events) flowing without buffering.
+		flush_interval -1
+	}
+}

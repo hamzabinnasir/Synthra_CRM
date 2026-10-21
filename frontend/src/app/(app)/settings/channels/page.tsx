@@ -29,7 +29,7 @@ export default function ChannelsOverviewPage() {
     <div className="space-y-6">
       <PageHeader
         title="Channels"
-        description="Set up only the channels you need. Each one has its own credentials, webhook and bot behaviour, and unused channels can stay empty."
+        description="Set up only the channels you need. Each one has its own credentials and bot behaviour. There are three webhooks in total (WhatsApp, Facebook and Instagram); inbox and comments on the same platform share one."
       />
 
       {error && (

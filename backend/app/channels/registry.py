@@ -155,6 +155,39 @@ CHANNELS: Dict[str, Channel] = {c.id: c for c in (
 
 CHANNEL_IDS: Tuple[str, ...] = tuple(CHANNELS)
 
+# Meta allows ONE callback URL per object per app, so webhooks are per PLATFORM, not per channel:
+#   /webhooks/{tenant}/whatsapp   -> whatsapp
+#   /webhooks/{tenant}/facebook   -> facebook_inbox + facebook_comments
+#   /webhooks/{tenant}/instagram  -> instagram_inbox + instagram_comments
+# Every channel of a platform shares that URL and one verify token; the receiver fans events out by kind.
+PLATFORMS: Tuple[str, ...] = ("whatsapp", "facebook", "instagram")
+
+
+def channels_for_platform(platform: str) -> Tuple[Channel, ...]:
+    return tuple(c for c in CHANNELS.values() if c.platform == platform)
+
+
+def webhook_fields_for_platform(platform: str) -> Tuple[str, ...]:
+    """Every Meta webhook field the platform's single subscription must include (order kept, no duplicates)."""
+    seen: Dict[str, None] = {}
+    for channel in channels_for_platform(platform):
+        for name in channel.webhook_fields:
+            seen.setdefault(name)
+    return tuple(seen)
+
+
+def resolve_webhook_target(target: str) -> Tuple[Optional[str], Tuple[Channel, ...]]:
+    """Map the last URL segment to (platform, channels it serves).
+
+    A platform name serves all of that platform's channels. A legacy channel id (for example
+    "facebook_comments", the per-channel URL used before the unified webhooks) still works and serves
+    just that channel, so callbacks already saved in Meta keep delivering after an upgrade.
+    """
+    if target in PLATFORMS:
+        return target, channels_for_platform(target)
+    channel = CHANNELS.get(target)
+    return (channel.platform, (channel,)) if channel else (None, ())
+
 # Non-secret bot behaviour, the same on every channel.
 BEHAVIOUR_FIELDS = ("llm_provider", "llm_model", "system_prompt", "tone", "spam_action", "abuse_action",
                     "business_phone", "pause_on_human", "handoff_message", "fallback_message")

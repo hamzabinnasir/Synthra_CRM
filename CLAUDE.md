@@ -31,7 +31,7 @@ Dev: pytest 8.3.4, pytest-asyncio 0.25.0, pgserver 0.1.4. DB: PostgreSQL + pgvec
 - tests/ (conftest, auth_service, channels_pg, channels_unit, tenantdb) · scripts/dev_postgres.py
 
 ## How it connects
-Meta webhook -> /webhooks/{tenant}/{channel} (size limit, HMAC check, 403 on any failure) -> events.extract ->
+Meta webhook -> /webhooks/{tenant}/{platform} (size limit, HMAC check per channel app secret, 403 on any failure; fans out to the platform's inbox + comments channels) -> events.extract ->
 EventQueue.enqueue (control DB, before 200) -> Worker claims -> BotEngine handler -> tenant pool (workspace DB) ->
 store.insert_message / customers -> KB retrieve (pgvector) + LLM -> MetaClient send. Dashboard routes:
 current_claims -> workspace_pool(claims.tenant_id) -> crm.store / MetaClient.
@@ -59,7 +59,7 @@ Channel ids: whatsapp, facebook_inbox, facebook_comments, instagram_inbox, insta
 - /api/media/{id} (auth) · /public/media/{tenant}/{media}?exp&sig (HMAC, 10 min, JPEG/PNG only)
 - /api/analytics?days · /api/notifications (GET ?unread&before_id&limit, /unread-count, POST /read{ids?}) · /api/activity
 - /api/events  SSE live updates: event "marks" (counters fingerprint, no message text), ends after 540 s -> client reconnects with fresh token; max 5 per tenant
-- /webhooks/{tenant_id}/{channel_id} GET (verify handshake) / POST · /healthz · /readyz · /docs (non-prod only)
+- /webhooks/{tenant_id}/{whatsapp|facebook|instagram} GET (verify handshake) / POST (legacy: last segment may still be a channel id) · /healthz · /readyz · /docs (non-prod only)
 
 ## Progress (branch complete-synthra)
 Stage 1 backend unblock: DONE (backend confirmed running by the owner). Stage 2 backend tests: IN PROGRESS (written; still TODO: DB-backed tests for
@@ -72,7 +72,14 @@ handoff resolve, rename, clear history, delete message, live refresh). Comments 
 hide, bot toggle, delete platform-first, bulk delete with per-item failures). Knowledge base: /knowledge-base (upload file or paste text, document list
 with inline delete confirm, retrieval test). Analytics: /analytics (7/14/30/90 d, KPIs, stacked daily bars in plain CSS, by-channel table, comment tone/action).
 Notifications: /notifications (unread filter, mark one/all read, keyset "load more", links to inbox/comments). Nav has no `soon` entries left.
-Stage 6 docs/deploy/OWASP: TODO.
+Stage 6 docs/deploy/OWASP: WRITTEN (not yet committed). README.md (Mermaid architecture, no-Docker quick start); docs/self-hosting.md, environment.md, security-review.md,
+production-checklist.md (incl. owner to-do list), docs/channels/{whatsapp,facebook-inbox,facebook-comments,instagram-inbox,instagram-comments}.md (filenames = registry guide paths).
+Meta steps were checked against Meta docs via search (IG-login permissions, WhatsApp system-user token, 24 h window) but NOT walked through in a live Meta app: verify once.
+Security review is evidence-labelled (Verified / Per notes / Not reviewed); many files not read, dependency audits not run.
+Deployment is NO-DOCKER by owner decision: deploy/ has systemd units (synthra-api, synthra-web) + Caddyfile (HSTS for app host, 20 MB body cap); control DB is any
+plain PostgreSQL via CRM_DATABASE_URL. docker-compose.yml, both Dockerfiles and both .dockerignore are STILL ON DISK: delete with `git rm` (no shell tool worked); never add Docker/compose back.
+Frontend no longer uses `output: "standalone"`: run `npm run build` then `npm run start` (NEXT_PUBLIC_API_URL must be set at build time, e.g. frontend/.env.production).
+FASTEMBED_CACHE_PATH is set in the systemd unit (not a CRM_* setting, .env cannot carry it).
 
 ## Conventions
 - `from __future__ import annotations`; one `router = APIRouter(prefix="/api/<x>")` per file; services live on app.state.
@@ -111,10 +118,18 @@ Tests: python -m pytest -q   (integration tests skipped unless CRM_TEST_DATABASE
 ## Known issues / TODOs
 1. (Stage 1, done) api/insights.py added: analytics, notifications, activity, SSE stream; .env.example completed; tests/test_app_boot.py guards route registration.
 4. Tests cover only auth, channels, tenantdb. No tests for bot engine, kb, inbox, comments, webhooks, media. No frontend tests yet.
-5. No README yet. Registry expects docs at /docs/channels/*.md (not verified to exist). Frontend (Stages 3-5) was written without a shell: run typecheck/dev once (editor diagnostics show no TS errors).
+5. Docs now exist (Stage 6). Frontend (Stages 3-5) was written without a shell: run npm install / typecheck / build once. How the frontend joins NEXT_PUBLIC_DOCS_URL with the backend guide path /docs/channels/<id>.md is not verified.
 6. Git warns LF->CRLF on Windows; consider a .gitattributes.
 9. notifications.tsx routes by `source_type` containing "comment" (-> /comments/<platform>) else /inbox/<platform>; the engine's actual type/source_type values were not verified.
 7. Sibling folder ../fbbot (with whatsapp-dashboard, Next 16 JS, single-tenant, direct Supabase) is the earlier standalone bot; reuse its UI ideas
    (ConversationList, MediaMessage, NotificationCenter, hooks) for Stage 5 but rewire to this API.
-8. Unverified (skimmed only): channels/service.py, channels/events.py, bot/prompts.py, bot/parsing.py, crm/lookups.py,
-   kb/embedder.py, auth/windows.py, platforms/factory.py. Re-read before editing them.
+8. Unverified (skimmed only): channels/service.py, bot/prompts.py, bot/parsing.py, crm/lookups.py,
+   kb/embedder.py, auth/windows.py, platforms/factory.py. Re-read before editing them. (channels/events.py and api/webhooks.py were read in Stage 6: OK.)
+10. (FIXED) Meta allows ONE callback URL per object per app, so webhooks are now per PLATFORM: /webhooks/{tenant}/{whatsapp|facebook|instagram} (3 total). A request is verified once (verify token of any channel on the platform; X-Hub-Signature-256 per channel app secret) and fanned out: each configured+enabled channel of the platform parses the payload for its own kind and enqueues under its own channel id, so the worker/engine are unchanged. Channels on one platform share one verify token (rotation applies to all). Legacy per-channel URLs (/webhooks/{tenant}/facebook_comments ...) still work and serve one channel. See api/webhooks.py, channels/registry.py (PLATFORMS, resolve_webhook_target), tests/test_webhooks_unified.py.
+    (Previously each channel had its own URL; superseded by the platform-level webhooks above.)
+    Implemented: /webhooks/{tenant}/{platform} verifies once and dispatches to both channels.
+11. No key-rotation script: SecretBox supports CRM_MASTER_KEY_PREVIOUS/needs_rotation() but nothing re-encrypts tenant_databases.encrypted_url / channel_configs.encrypted_secrets.
+12. Instagram tokens expire (~60 d); no verified refresh or expiry warning.
+13. Webhook per-workspace rate limit runs after the signature check (bad-signature floods are not limited in-app; add proxy limits). TenantDatabaseService.pool() uses one global lock.
+14. Security review (docs/security-review.md) is partial: auth/service, crm/store, api/{inbox,comments,kb,media,insights}, bot/*, llm/*, kb/*, platforms/*, provisioner.py not read; pip-audit/npm audit not run.
+15. Docker leftovers still on disk (see Stage 6 note). Dev shell tool timed out in the Stage 6 session; no commands were run (no git, tests, typecheck).

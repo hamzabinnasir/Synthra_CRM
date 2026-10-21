@@ -1,0 +1,32 @@
+# Synthra CRM API (FastAPI + background worker). Replaces the old backend/Dockerfile.
+# Install: copy to /etc/systemd/system/synthra-api.service, then
+#   sudo systemctl daemon-reload && sudo systemctl enable --now synthra-api
+# Expects: code in /opt/synthra-crm, venv at /opt/synthra-crm/backend/.venv, config in /opt/synthra-crm/backend/.env
+[Unit]
+Description=Synthra CRM API
+After=network-online.target postgresql.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=synthra
+Group=synthra
+WorkingDirectory=/opt/synthra-crm/backend
+# The embedding model cache must survive restarts (systemd creates /var/lib/synthra owned by the service user).
+StateDirectory=synthra
+Environment=FASTEMBED_CACHE_PATH=/var/lib/synthra/models
+Environment=PYTHONUNBUFFERED=1
+# Behind a reverse proxy set CRM_TRUSTED_PROXY_HOPS in .env and keep --proxy-headers off: the app reads X-Forwarded-For itself.
+ExecStart=/opt/synthra-crm/backend/.venv/bin/uvicorn app.main:app --host 127.0.0.1 --port 8000
+Restart=on-failure
+RestartSec=3
+
+# Hardening
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/synthra
+
+[Install]
+WantedBy=multi-user.target
